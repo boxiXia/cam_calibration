@@ -1,8 +1,6 @@
 # Multi-Camera Calibration for Mobile Legged Robots
 
-A high-performance calibration system for determining camera-to-link transforms on floating-base robots (humanoids, quadrupeds) using multi-camera constraints.
-
-[![Tests](https://img.shields.io/badge/tests-passing-brightgreen)]() [![Code](https://img.shields.io/badge/code-optimized-blue)]() [![Accuracy](https://img.shields.io/badge/accuracy-0.0004mm-orange)]()
+A calibration system for determining camera-to-link transforms on floating-base robots (humanoids, quadrupeds) using multi-camera constraints.
 
 ---
 
@@ -24,24 +22,24 @@ A high-performance calibration system for determining camera-to-link transforms 
 
 ## Overview
 
-This package solves camera calibration for **floating-base robots** where absolute base position is unknown. When 2+ cameras view the same calibration object simultaneously, they must agree on the object's pose in the base frame—creating constraints that enable calibration without knowing absolute base position.
+This package addresses camera calibration for floating-base robots where absolute base position is unknown. When 2+ cameras view the same calibration object simultaneously, they must agree on the object's pose in the base frame, creating constraints that enable calibration without absolute base position.
 
-### Key Features
+### Features
 
-- ✅ **Floating-base compatible**: No absolute base position needed
-- ✅ **Unified formulation**: Treats fixed and articulated cameras identically
-- ✅ **Detection weighting**: Automatically weights by AprilTag count (1-6 tags)
-- ✅ **Robust optimization**: Levenberg-Marquardt with regularization
-- ✅ **Fine-tuning**: Optional second pass for near-perfect accuracy
-- ✅ **Verified**: 100% test coverage with synthetic validation
+- Floating-base compatible: No absolute base position required
+- Unified formulation: Treats fixed and articulated cameras identically
+- Detection weighting: Weights detections by AprilTag count (1-6 tags)
+- Levenberg-Marquardt optimization with regularization
+- Optional fine-tuning pass with reduced regularization
+- Synthetic test coverage with known ground truth
 
-### Performance
+### Test Results
 
 | Test Scenario | Result |
 |---------------|--------|
-| Perfect data (no noise) | **0.0004mm, 0.0000°** with fine-tuning |
-| Realistic noise (2mm, 1°) | **0.73mm, 0.04°** ground truth error |
-| Large initial error (50mm, 10°) | **99% improvement** → 0.43mm |
+| Perfect data (no noise) | 0.0004mm, 0.0000° with fine-tuning |
+| Realistic noise (2mm, 1°) | 0.73mm, 0.04° ground truth error |
+| Large initial error (50mm, 10°) | 99% improvement → 0.43mm |
 
 ---
 
@@ -64,12 +62,12 @@ for i in range(30):
     detections = detect_apriltags()  # List of Detection objects
     calibrator.add_capture(link_poses, detections)
 
-# 3. Optimize (with optional fine-tuning for high precision)
+# 3. Optimize
 results = calibrator.optimize(fine_tune=True)
 
 # 4. Validate
 validation = calibrator.validate()
-print(validation)  # Mean error: 2.3mm, 0.8°
+print(validation)
 
 # 5. Save
 np.savez('calibration.npz', **results)
@@ -105,7 +103,7 @@ base_T_object = base_T_parent_link · link_T_cam · cam_T_object
                 from SDK            OPTIMIZE     from detection
 ```
 
-**Goal**: Solve for `link_T_cam` for each camera.
+Goal: Solve for `link_T_cam` for each camera.
 
 ### Floating Base Solution
 
@@ -115,7 +113,7 @@ When cameras A and B both see the same object:
 base_T_object (from A) = base_T_object (from B)
 ```
 
-This creates pairwise constraints that **cancel the unknown base position**.
+This creates pairwise constraints that cancel the unknown base position.
 
 ### Detection Weighting
 
@@ -140,10 +138,10 @@ cost = Σ w_pair · (||Δtrans||² + w_rot · ||Δrot||²) + λ · Σ ||correcti
        pairwise errors                              regularization
 ```
 
-- **Pairwise errors**: Cameras must agree on object pose
-- **Regularization**: Penalize large deviations from initial estimate
-- **w_rot**: Rotation weight = d² (working distance²)
-- **λ**: Regularization weight
+- Pairwise errors: Cameras must agree on object pose
+- Regularization: Penalizes large deviations from initial estimate
+- w_rot: Rotation weight = d² (working distance²)
+- λ: Regularization weight
 
 ---
 
@@ -155,7 +153,7 @@ cost = Σ w_pair · (||Δtrans||² + w_rot · ||Δrot||²) + λ · Σ ||correcti
 from multi_camera_calibration import CameraConfig, RobotConfig
 import numpy as np
 
-# Initial transforms from URDF (will be refined)
+# Initial transforms from URDF
 chest_T_cam = np.array([
     [0, 0, 1, 0.15],   # Looking forward
     [-1, 0, 0, 0.0],
@@ -174,7 +172,6 @@ cameras = [
         parent_link="head_link",
         init_link_T_cam=head_T_cam
     ),
-    # Add more cameras...
 ]
 
 robot_config = RobotConfig(cameras=cameras)
@@ -193,27 +190,25 @@ calibrator = Calibrator(
 )
 ```
 
-**Parameter Guide:**
+**Parameter Selection:**
 
 - **w_rot**: Set to d² where d = working distance (meters)
-  - 0.0625 for d=0.25m (close-up)
-  - 0.25 for d=0.5m (default)
-  - 1.0 for d=1.0m (far)
-- **lambda_reg**: Higher = trust initial estimate more (default: 1.0)
+  - 0.0625 for d=0.25m
+  - 0.25 for d=0.5m
+  - 1.0 for d=1.0m
+- **lambda_reg**: Higher values trust initial estimate more (default: 1.0)
 - **min_tags**: Minimum tags per detection (default: 2)
 
 ### Step 3: Collect Data
 
 ```python
 for i in range(30):  # 20-40 captures recommended
-    # Position robot so 2+ cameras see calibration object
     input(f"Capture {i+1}/30 - Position robot and press Enter")
 
     # Get link poses from robot SDK
     link_poses = {
         'torso_link': robot.get_link_pose('torso_link'),  # 4x4 SE3
         'head_link': robot.get_link_pose('head_link'),
-        # Add all parent links...
     }
 
     # Detect AprilTags from camera images
@@ -224,22 +219,21 @@ for i in range(30):  # 20-40 captures recommended
             cam_T_object = compute_board_pose(tags)
             detections.append(Detection(
                 camera_id=camera_id,
-                object_id=0,  # Single calibration board
+                object_id=0,
                 cam_T_object=cam_T_object,
                 num_tags=len(tags)
             ))
 
-    # Add to calibrator
     calibrator.add_capture(link_poses, detections)
 ```
 
-**Data Collection Tips:**
+**Data Collection Guidelines:**
 
-- **Minimum**: 15-20 captures
-- **Recommended**: 30-40 captures
-- **Diversity**: Vary robot configurations significantly
-- **Coverage**: Each camera pair should share views 2-3+ times
-- **Moving cameras**: Multiple joint configurations essential
+- Minimum: 15-20 captures
+- Recommended: 30-40 captures
+- Vary robot configurations significantly
+- Each camera pair should share views 2-3+ times
+- Moving cameras require multiple joint configurations
 
 ### Step 4: Optimize
 
@@ -247,11 +241,11 @@ for i in range(30):  # 20-40 captures recommended
 # Standard optimization
 results = calibrator.optimize(verbose=True)
 
-# High-precision optimization (for clean data)
+# With fine-tuning
 results = calibrator.optimize(
     verbose=True,
-    fine_tune=True,         # Second pass with reduced regularization
-    fine_tune_lambda=0.001  # Much lower regularization
+    fine_tune=True,
+    fine_tune_lambda=0.001
 )
 ```
 
@@ -262,21 +256,21 @@ results = calibrator.optimize(
 validation = calibrator.validate()
 print(validation)
 
-# Validate on test data (hold-out captures)
+# Validate on test data
 test_validation = calibrator.validate(test_captures=test_captures)
 
 # Check criteria
-assert validation.passed_sanity_check, "Corrections too large!"
-assert validation.mean_translation_error_mm < 5.0, "Translation error too high!"
-assert validation.mean_rotation_error_deg < 1.0, "Rotation error too high!"
+assert validation.passed_sanity_check
+assert validation.mean_translation_error_mm < 5.0
+assert validation.mean_rotation_error_deg < 1.0
 ```
 
 **Validation Criteria:**
 
-- ✓ Mean error: < 5mm, < 1°
-- ✓ Sanity check: Corrections < 20mm, < 5°
-- ✓ Constraint graph: Connected
-- ✓ Test error ≈ Training error
+- Mean error: < 5mm, < 1°
+- Sanity check: Corrections < 20mm, < 5°
+- Constraint graph: Connected
+- Test error similar to training error
 
 ### Step 6: Save Results
 
@@ -284,11 +278,11 @@ assert validation.mean_rotation_error_deg < 1.0, "Rotation error too high!"
 # Save calibrated transforms
 np.savez('calibration.npz', **results)
 
-# Save corrections for debugging
+# Save corrections
 corrections = calibrator.get_corrections()
 np.savez('corrections.npz', **corrections)
 
-# Load later
+# Load
 data = np.load('calibration.npz')
 chest_T_cam = data['chest']
 ```
@@ -429,24 +423,15 @@ cameras = [
 
 calibrator = Calibrator(RobotConfig(cameras), w_rot=0.25)
 
-# Data collection: vary poses
-# - Standing: head looking different directions
-# - Arms extended: different heights and positions
-# - Manipulation: hands near calibration object
-# - Dynamic: various combinations
-
-# Run example
-# python examples/unitree_g1_example.py
+# Run: python examples/unitree_g1_example.py
 ```
 
 ### Synthetic Verification
 
-Verify correctness with known ground truth:
-
 ```python
 from multi_camera_calibration import SimulationFramework
 
-# Create simulation with random ground truth
+# Create simulation with known ground truth
 sim, robot_config, gt_transforms = SimulationFramework.create_from_scratch(
     camera_ids=["cam1", "cam2", "cam3", "cam4"],
     parent_links=["link1", "link2", "link3", "link4"],
@@ -465,9 +450,8 @@ results = calibrator.optimize(fine_tune=True)
 
 # Compare to ground truth
 errors = sim.compute_ground_truth_errors(results)
-# Expected: < 1mm with realistic noise
 
-# Run verification: python examples/synthetic_verification.py
+# Run: python examples/synthetic_verification.py
 ```
 
 ---
@@ -480,32 +464,28 @@ errors = sim.compute_ground_truth_errors(results)
 # Transform utilities
 python tests/test_transforms.py
 
-# Complete synthetic verification
+# Synthetic verification
 python examples/synthetic_verification.py
 ```
 
 ### Synthetic Test Results
 
-| Test | Setup | Result | Status |
-|------|-------|--------|--------|
-| **No Noise** | 15 captures, 0mm noise | **0.0004mm, 0.0000°** | ✅ PASS |
-| **Realistic Noise** | 30 captures, 2mm/1° noise | **0.73mm, 0.04°** GT error | ✅ PASS |
-| **Generalization** | 25 train / 10 test split | Test error ≈ training | ✅ PASS |
-| **Large Initial Error** | 50mm, 10° initial error | **99% improvement** | ✅ PASS |
+| Test | Setup | Result |
+|------|-------|--------|
+| No Noise | 15 captures, 0mm noise | 0.0004mm, 0.0000° |
+| Realistic Noise | 30 captures, 2mm/1° noise | 0.73mm, 0.04° GT error |
+| Generalization | 25 train / 10 test split | Test error ≈ training |
+| Large Initial Error | 50mm, 10° initial error | 99% improvement |
 
 ### Real-World Validation
 
-After calibration, validate with fresh captures:
-
 ```python
-# Collect new test captures (not used in calibration)
+# Collect test captures
 test_captures = collect_new_data()
 
 # Validate
 test_validation = calibrator.validate(test_captures=test_captures)
 print(f"Test error: {test_validation.mean_translation_error_mm:.2f}mm")
-
-# Should be similar to training error
 ```
 
 ---
@@ -519,7 +499,7 @@ print(f"Test error: {test_validation.mean_translation_error_mm:.2f}mm")
 **Solutions:**
 - Verify multiple cameras see calibration object
 - Check AprilTag detection pipeline
-- Lower `min_tags` temporarily (warning: less reliable)
+- Lower `min_tags` temporarily
 - Improve object visibility and lighting
 
 ### "Constraint graph disconnected"
@@ -547,10 +527,7 @@ print(f"Test error: {test_validation.mean_translation_error_mm:.2f}mm")
 
 **Solutions:**
 - Collect more captures (30-40+)
-- Improve AprilTag detection:
-  - Better lighting
-  - Sharp focus
-  - Higher resolution
+- Improve AprilTag detection (lighting, focus, resolution)
 - Use boards with more tags (6 instead of 1-3)
 - Verify link poses from SDK are accurate
 - Check camera synchronization
@@ -574,8 +551,8 @@ print(f"Test error: {test_validation.mean_translation_error_mm:.2f}mm")
 
 ```
 src/multi_camera_calibration/
-├── data_structures.py    # Data classes (CameraConfig, Capture, etc.)
-├── transforms.py         # SE3 operations (84 lines, optimized)
+├── data_structures.py    # Data classes
+├── transforms.py         # SE3 operations (84 lines)
 ├── cost_function.py      # Residuals & constraints (153 lines)
 ├── calibrator.py         # Main engine (221 lines)
 └── simulation.py         # Synthetic data generation
@@ -594,10 +571,10 @@ base_T_object = compose_transforms(
 
 ### Optimization Variables
 
-- **Parameterization**: 6-DOF corrections per camera `[rx, ry, rz, tx, ty, tz]`
-- **Total unknowns**: 6 × num_cameras
-- **Initial value**: All zeros (identity correction)
-- **Update rule**: `link_T_cam = init_link_T_cam @ correction_matrix`
+- Parameterization: 6-DOF corrections per camera `[rx, ry, rz, tx, ty, tz]`
+- Total unknowns: 6 × num_cameras
+- Initial value: All zeros (identity correction)
+- Update rule: `link_T_cam = init_link_T_cam @ correction_matrix`
 
 ### Residuals
 
@@ -624,37 +601,29 @@ Total: `6 × num_constraints + 6 × num_cameras`
 
 ## Performance
 
-### Code Optimization
+### Code Metrics
 
-The codebase has been **optimized for clarity and maintainability**:
+| File | Lines |
+|------|-------|
+| `transforms.py` | 84 |
+| `cost_function.py` | 153 |
+| `calibrator.py` | 221 |
+| **Total core** | **458** |
 
-| File | Before | After | Reduction |
-|------|--------|-------|-----------|
-| `transforms.py` | 247 | 84 | **-66%** |
-| `cost_function.py` | 283 | 153 | **-46%** |
-| `calibrator.py` | 351 | 221 | **-37%** |
-| **Total** | **881** | **458** | **-48%** |
+### Runtime
 
-**Key improvements:**
-- Removed redundant helper functions
-- Inline documentation with formulas
-- Better algorithm flow
-- Preserved all functionality and tests
-
-### Runtime Performance
-
-- **Typical**: < 1 minute for 30 captures, 4 cameras
-- **Complexity**: O(n_constraints × n_cameras) per iteration
-- **Iterations**: 10-50 (Levenberg-Marquardt)
-- **Memory**: O(captures × detections)
+- Typical: < 1 minute for 30 captures, 4 cameras
+- Complexity: O(n_constraints × n_cameras) per iteration
+- Iterations: 10-50 (Levenberg-Marquardt)
+- Memory: O(captures × detections)
 
 ### Accuracy
 
-| Scenario | Accuracy |
-|----------|----------|
-| Perfect data + fine-tuning | **0.0004mm** (sub-micron) |
-| Realistic noise (2mm/1°) | **0.7mm** ground truth |
-| Large initial error | **99% correction** |
+| Scenario | Result |
+|----------|--------|
+| Perfect data + fine-tuning | 0.0004mm |
+| Realistic noise (2mm/1°) | 0.7mm ground truth |
+| Large initial error | 99% correction |
 
 ---
 
@@ -676,7 +645,6 @@ results = calibrator.optimize(fine_tune=True)
 
 # Validate
 validation = calibrator.validate()
-assert validation.mean_translation_error_mm < 5.0
 
 # Save
 np.savez('calibration.npz', **results)
@@ -689,7 +657,7 @@ num_tags:  1    2     3     4     5     6
 weight:    0   0.5   0.67  0.75  0.8   0.83
 ```
 
-### Parameter Defaults
+### Parameters
 
 ```python
 w_rot = 0.25        # For d=0.5m working distance
@@ -697,7 +665,7 @@ lambda_reg = 1.0    # Regularization weight
 min_tags = 2        # Minimum tags per detection
 ```
 
-### SE3 Transform Format
+### SE3 Format
 
 ```
 ┌           ┐
@@ -712,8 +680,6 @@ Bottom row must be `[0, 0, 0, 1]`
 
 ## Citation
 
-If you use this calibration system in your research:
-
 ```bibtex
 @software{multi_camera_calibration,
   title = {Multi-Camera Calibration for Mobile Legged Robots},
@@ -727,7 +693,3 @@ If you use this calibration system in your research:
 ## License
 
 MIT License
-
----
-
-**Status**: ✅ Production Ready | **Tests**: ✅ 100% Pass | **Code**: ✅ Optimized (-48%)
