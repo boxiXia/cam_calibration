@@ -127,11 +127,18 @@ class Calibrator:
 
         return len(visited) == len(camera_ids)
 
-    def optimize(self, verbose: bool = True) -> Dict[str, np.ndarray]:
+    def optimize(
+        self,
+        verbose: bool = True,
+        fine_tune: bool = False,
+        fine_tune_lambda: float = 0.01,
+    ) -> Dict[str, np.ndarray]:
         """Run calibration optimization.
 
         Args:
             verbose: If True, print optimization progress
+            fine_tune: If True, run second optimization pass with reduced regularization
+            fine_tune_lambda: Regularization weight for fine-tuning (default: 0.01)
 
         Returns:
             Dictionary mapping camera_id to optimized link_T_cam transform
@@ -201,6 +208,35 @@ class Calibrator:
         if verbose:
             print(f"Optimization finished: {result.message}")
             print(f"Final cost: {result.cost:.6f}")
+
+        # Fine-tuning pass with reduced regularization
+        if fine_tune:
+            if verbose:
+                print(f"\nFine-tuning with lambda={fine_tune_lambda}...")
+
+            def fine_tune_residual_fn(corrections):
+                return compute_residuals(
+                    corrections,
+                    self._constraints,
+                    self.robot_config,
+                    self.w_rot,
+                    fine_tune_lambda,  # Reduced regularization
+                )
+
+            result_ft = least_squares(
+                fine_tune_residual_fn,
+                self._optimized_corrections,  # Start from previous result
+                method='lm',
+                verbose=2 if verbose else 0,
+            )
+
+            if not result_ft.success:
+                warnings.warn(f"Fine-tuning did not converge: {result_ft.message}")
+            else:
+                self._optimized_corrections = result_ft.x
+                if verbose:
+                    print(f"Fine-tuning finished: {result_ft.message}")
+                    print(f"Final cost: {result_ft.cost:.6f}")
 
         # Return optimized transforms
         return self.get_optimized_transforms()

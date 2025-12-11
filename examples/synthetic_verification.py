@@ -47,12 +47,13 @@ def test_no_noise():
     captures = sim.generate_dataset(num_captures=15, num_objects_per_capture=3)
     print(f"Generated {len(captures)} captures")
 
-    # Run calibration
+    # Run calibration with fine-tuning for perfect data
     calibrator = Calibrator(robot_config, w_rot=0.25, lambda_reg=1.0)
     for capture in captures:
         calibrator.add_capture(capture.link_poses, capture.detections)
 
-    optimized = calibrator.optimize(verbose=False)
+    # Use fine-tuning to achieve near-perfect recovery with noiseless data
+    optimized = calibrator.optimize(verbose=False, fine_tune=True, fine_tune_lambda=0.001)
 
     # Validate
     validation = calibrator.validate()
@@ -72,10 +73,10 @@ def test_no_noise():
     max_trans_err = max(trans_err for trans_err, _ in gt_errors.values())
     max_rot_err = max(rot_err for _, rot_err in gt_errors.values())
 
-    # With regularization, perfect recovery isn't expected, but should be very close
-    success = max_trans_err < 0.5 and max_rot_err < 0.05  # < 0.5mm and 0.05°
+    # With fine-tuning and no noise, should achieve near-perfect recovery
+    success = max_trans_err < 0.1 and max_rot_err < 0.01  # < 0.1mm and 0.01°
     print(f"\n{'✓ PASS' if success else '✗ FAIL'}: Max error {max_trans_err:.4f}mm, "
-          f"{max_rot_err:.4f}°")
+          f"{max_rot_err:.4f}° (with fine-tuning)")
 
     return success
 
