@@ -67,22 +67,21 @@ def compute_pairwise_residual(
     link_T_cam_b: np.ndarray,
     w_rot: float,
 ) -> np.ndarray:
-    """Compute 6-DOF residual enforcing base_T_object agreement between two cameras."""
-    # Both cameras should compute same base_T_object
+    """Compute 6-DOF residual: both cameras should predict same base_T_object."""
+    # Chain: base→link_a→cam_a→object and base→link_b→cam_b→object
     base_T_object_a = compose_transforms(constraint.base_T_link_a, link_T_cam_a, constraint.cam_a_T_object)
     base_T_object_b = compose_transforms(constraint.base_T_link_b, link_T_cam_b, constraint.cam_b_T_object)
 
-    # Translation error (3D)
+    # Translation error (3D): difference in predicted object position
     trans_error = base_T_object_a[:3, 3] - base_T_object_b[:3, 3]
 
-    # Rotation error as axis-angle (3D)
-    R_diff = base_T_object_a[:3, :3].T @ base_T_object_b[:3, :3]
-    rot_error = rotation_matrix_to_axis_angle(R_diff)
+    # Rotation error (3D): axis-angle of relative rotation
+    rot_error = rotation_matrix_to_axis_angle(base_T_object_a[:3, :3].T @ base_T_object_b[:3, :3])
 
-    # Apply weights: sqrt(weight) for residuals (squared in cost)
+    # Weight by detection quality: sqrt(weight) since residuals are squared in cost
     return np.concatenate([
         np.sqrt(constraint.weight) * trans_error,
-        np.sqrt(constraint.weight * w_rot) * rot_error,
+        np.sqrt(constraint.weight * w_rot) * rot_error,  # w_rot balances trans vs rot units
     ])
 
 

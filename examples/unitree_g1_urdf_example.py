@@ -159,73 +159,21 @@ def run_urdf_based_verification(urdf_path: str):
     return success
 
 
-def demonstrate_camera_specs_only():
-    """Demonstrate using camera specs without URDF file."""
-    print("\n" + "=" * 70)
-    print("  Demo: Using Camera Specs Without URDF")
-    print("=" * 70)
-
-    camera_specs = [
-        {
-            "camera_id": "chest",
-            "parent_link": "torso_link",
-            "xyz": [0.15, 0.0, 0.30],
-            "rpy": [0, 0, 0],
-        },
-        {
-            "camera_id": "head",
-            "parent_link": "head_link",
-            "xyz": [0.10, 0.0, 0.05],
-            "rpy": [0, 0, 0],
-        },
-    ]
-
-    print("\nCamera specifications:")
-    print("  camera_specs = [")
-    for spec in camera_specs:
-        xyz = spec['xyz']
-        rpy = spec['rpy']
-        print(f"      {{\"camera_id\": \"{spec['camera_id']}\", "
-              f"\"parent_link\": \"{spec['parent_link']}\",")
-        print(f"       \"xyz\": [{xyz[0]}, {xyz[1]}, {xyz[2]}], "
-              f"\"rpy\": [{rpy[0]}, {rpy[1]}, {rpy[2]}]}},")
-    print("  ]")
-
-    print("\nCreate simulation:")
-    print("  sim, robot_config, gt_transforms = SimulationFramework.create_from_urdf(")
-    print("      urdf_path=\"\",  # Optional")
-    print("      camera_specs=camera_specs,")
-    print("      perturbation_translation_m=0.020,")
-    print("      perturbation_rotation_deg=3.0,")
-    print("      seed=42,")
-    print("  )")
-
-    print("\nNote: URDF file is optional. Camera transforms are defined")
-    print("      directly in camera_specs using xyz + rpy notation.")
-
-
 def main():
     """Run Unitree G1 URDF-based verification example."""
-
-    # Find G1 URDF file
     script_dir = os.path.dirname(os.path.abspath(__file__))
     urdf_path = os.path.join(script_dir, '..', 'urdf', 'g1_dual_arm.urdf')
 
     if not os.path.exists(urdf_path):
         print(f"ERROR: URDF file not found at {urdf_path}")
-        print("\nDownload it with:")
+        print("\nDownload with:")
         print("  mkdir -p urdf")
-        print("  curl -sL https://raw.githubusercontent.com/unitreerobotics/unitree_ros/master/robots/g1_description/g1_dual_arm.urdf -o urdf/g1_dual_arm.urdf")
+        print("  curl -sL https://raw.githubusercontent.com/unitreerobotics/"
+              "unitree_ros/master/robots/g1_description/g1_dual_arm.urdf "
+              "-o urdf/g1_dual_arm.urdf")
         return False
 
-    # Run verification
-    success = run_urdf_based_verification(urdf_path)
-
-    # Show demo
-    demonstrate_camera_specs_only()
-
-    print()
-    return success
+    return run_urdf_based_verification(urdf_path)
 
 
 if __name__ == "__main__":
