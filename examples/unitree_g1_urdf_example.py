@@ -51,6 +51,66 @@ def unitree_g1_camera_specs():
     ]
 
 
+def test_specific_joint_configs(sim, robot_config, gt_transforms):
+    """Test calibration with specific important joint configurations."""
+    print("\n" + "=" * 70)
+    print("  Testing Specific Robot Configurations")
+    print("=" * 70)
+
+    # Define specific test configurations
+    test_configs = {
+        "home": {name: 0.0 for name in sim.urdf_model.actuated_joint_names},
+        "arms_up": {name: (0.5 if "shoulder" in name else 0.0)
+                    for name in sim.urdf_model.actuated_joint_names},
+        "arms_forward": {name: (1.0 if "elbow" in name else 0.0)
+                        for name in sim.urdf_model.actuated_joint_names},
+    }
+
+    all_captures = []
+    for config_name, cfg in test_configs.items():
+        # Set specific joint configuration
+        sim.urdf_model.update_cfg(cfg)
+
+        # Generate link poses for this configuration
+        link_poses = sim.generate_urdf_link_poses()
+
+        # Generate 5 captures with this robot pose (more data per config)
+        for i in range(5):
+            capture = sim.generate_capture(
+                len(all_captures),
+                num_objects=3,
+                link_poses=link_poses,  # Use same robot pose
+                object_poses=None  # Different object poses
+            )
+            all_captures.append(capture)
+
+        # Show wrist position for this config (wrist actually moves)
+        wrist_pos = link_poses["left_wrist_yaw_link"][:3, 3]
+        print(f"  {config_name:15s}: L wrist at [{wrist_pos[0]:+.3f}, {wrist_pos[1]:+.3f}, {wrist_pos[2]:+.3f}]m")
+
+    print(f"\nGenerated {len(all_captures)} captures across {len(test_configs)} specific poses")
+
+    # Run calibration on specific configs
+    print("\nRunning calibration on specific configurations...")
+    calibrator = Calibrator(robot_config, w_rot=0.25, lambda_reg=1.0)
+    for capture in all_captures:
+        calibrator.add_capture(capture.link_poses, capture.detections)
+
+    results = calibrator.optimize(verbose=False, fine_tune=True, fine_tune_lambda=0.001)
+
+    # Compare to ground truth
+    gt_errors = sim.compute_ground_truth_errors(results)
+    max_trans_err = max(err[0] for err in gt_errors.values())
+    max_rot_err = max(err[1] for err in gt_errors.values())
+
+    print(f"  Ground truth error: {max_trans_err:.3f}mm, {max_rot_err:.3f}°")
+    # More relaxed threshold for specific configs (less data, more constrained)
+    success = max_trans_err < 5.0 and max_rot_err < 0.5
+    print(f"  Status: {'PASS' if success else 'FAIL'}")
+
+    return success
+
+
 def run_urdf_based_verification(urdf_path: str):
     """Run calibration verification using URDF-based ground truth.
 
@@ -89,12 +149,39 @@ def run_urdf_based_verification(urdf_path: str):
 
     # Generate synthetic data using URDF forward kinematics
     print("\nGenerating synthetic calibration data using URDF FK...")
-    print("  Each capture uses random joint configuration from URDF")
+    print("  Testing across diverse robot configurations:")
     sim.noise_translation_m = 0.002  # 2mm
     sim.noise_rotation_rad = np.deg2rad(1.0)  # 1°
 
-    captures = sim.generate_dataset(num_captures=30, num_objects_per_capture=3)
-    print(f"Generated {len(captures)} captures with realistic robot poses")
+    # Generate captures across different robot poses
+    captures = []
+    joint_configs_used = []
+
+    for i in range(30):
+        # Each capture uses a different random joint configuration
+        capture = sim.generate_capture(i, num_objects=3)
+        captures.append(capture)
+
+        # Track joint diversity (show first 5)
+        if i < 5:
+            # Get current joint config from URDF (cfg is numpy array)
+            joint_names = sim.urdf_model.actuated_joint_names[:3]
+            cfg_sample = {name: sim.urdf_model.cfg[idx]
+                         for idx, name in enumerate(joint_names)}
+            joint_configs_used.append(cfg_sample)
+
+    print(f"  Generated {len(captures)} captures with varying robot poses")
+    print(f"  Example joint configs (first 3 DOFs of first 5 captures):")
+    for idx, cfg in enumerate(joint_configs_used):
+        vals = [f"{v:+.2f}" for v in cfg.values()]
+        print(f"    Capture {idx}: {', '.join(cfg.keys())} = [{', '.join(vals)}] rad")
+
+    # Show link pose diversity (use wrist which actually moves)
+    sample_link = "left_wrist_yaw_link"
+    positions = [c.link_poses[sample_link][:3, 3] for c in captures[:5]]
+    print(f"  {sample_link} position diversity (first 5 captures):")
+    for idx, pos in enumerate(positions):
+        print(f"    Capture {idx}: [{pos[0]:+.3f}, {pos[1]:+.3f}, {pos[2]:+.3f}]m")
 
     # Run calibration
     print("\nRunning calibration...")
@@ -148,12 +235,22 @@ def run_urdf_based_verification(urdf_path: str):
 
     # Summary
     print("\n" + "=" * 70)
-    print(f"  Maximum error: {max_trans_err:.3f}mm, {max_rot_err:.3f}°")
-    print(f"  URDF-based FK: Using actual robot kinematics for link poses")
+    print(f"  Random Poses Test - Maximum error: {max_trans_err:.3f}mm, {max_rot_err:.3f}°")
 
     # More realistic threshold for URDF-based simulation
-    success = max_trans_err < 2.0 and max_rot_err < 0.3
-    print(f"  Status: {'PASS' if success else 'FAIL'}")
+    success_random = max_trans_err < 2.0 and max_rot_err < 0.3
+    print(f"  Random Poses Status: {'PASS' if success_random else 'FAIL'}")
+    print("=" * 70)
+
+    # Test specific important configurations
+    success_specific = test_specific_joint_configs(sim, robot_config, gt_transforms)
+
+    # Overall success
+    success = success_random and success_specific
+    print("\n" + "=" * 70)
+    print(f"  OVERALL STATUS: {'✓ PASS' if success else '✗ FAIL'}")
+    print(f"    - Random robot poses: {'✓' if success_random else '✗'}")
+    print(f"    - Specific robot poses: {'✓' if success_specific else '✗'}")
     print("=" * 70)
 
     return success
