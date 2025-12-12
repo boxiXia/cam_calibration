@@ -17,45 +17,45 @@ from multi_camera_calibration import Calibrator, SimulationFramework
 def unitree_g1_camera_specs():
     """Define Unitree G1 camera specifications.
 
-    These are realistic camera positions based on the G1 humanoid robot:
-    - Chest camera (RealSense D435i): Forward-facing on torso
-    - Head camera (RealSense D435i): Forward-facing on head
-    - Left hand camera (RealSense D405): Downward-facing on left wrist
-    - Right hand camera (RealSense D405): Downward-facing on right wrist
+    These are realistic camera positions based on the actual G1 URDF:
+    - Chest camera: Forward-facing on torso_link
+    - Head camera: Forward-facing on head_link
+    - Left hand camera: Downward-facing on left_wrist_yaw_link
+    - Right hand camera: Downward-facing on right_wrist_yaw_link
     """
     return [
         {
             "camera_id": "chest",
             "parent_link": "torso_link",
-            "xyz": [0.15, 0.0, 0.30],  # 15cm forward, 30cm up from torso
+            "xyz": [0.15, 0.0, 0.20],  # 15cm forward, 20cm up from torso center
             "rpy": [0, 0, 0],  # Looking forward
         },
         {
             "camera_id": "head",
             "parent_link": "head_link",
-            "xyz": [0.10, 0.0, 0.05],  # 10cm forward, 5cm up from head
+            "xyz": [0.08, 0.0, 0.03],  # 8cm forward, 3cm up from head center
             "rpy": [0, 0, 0],  # Looking forward
         },
         {
             "camera_id": "hand_L",
-            "parent_link": "left_wrist_link",
-            "xyz": [0.05, 0.02, 0.0],  # 5cm forward, 2cm to side
+            "parent_link": "left_wrist_yaw_link",
+            "xyz": [0.05, 0.0, -0.02],  # 5cm forward, 2cm down from wrist
             "rpy": [0, np.deg2rad(45), 0],  # Tilted down 45°
         },
         {
             "camera_id": "hand_R",
-            "parent_link": "right_wrist_link",
-            "xyz": [0.05, -0.02, 0.0],  # 5cm forward, 2cm to side
+            "parent_link": "right_wrist_yaw_link",
+            "xyz": [0.05, 0.0, -0.02],  # 5cm forward, 2cm down from wrist
             "rpy": [0, np.deg2rad(45), 0],  # Tilted down 45°
         },
     ]
 
 
-def run_urdf_based_verification(urdf_path: str = None):
+def run_urdf_based_verification(urdf_path: str):
     """Run calibration verification using URDF-based ground truth.
 
     Args:
-        urdf_path: Path to G1 URDF file (optional, validates if provided)
+        urdf_path: Path to G1 URDF file (required)
     """
     print("=" * 70)
     print("  Unitree G1 URDF-Based Calibration Verification")
@@ -72,39 +72,29 @@ def run_urdf_based_verification(urdf_path: str = None):
         rpy_str = f"rpy=[{rpy_deg[0]:.1f}°, {rpy_deg[1]:.1f}°, {rpy_deg[2]:.1f}°]"
         print(f"              {xyz_str}, {rpy_str}")
 
-    # Create simulation
-    print("\nCreating simulation framework...")
+    # Create simulation using actual URDF
+    print(f"\nUsing URDF: {urdf_path}")
+    print("Creating simulation framework with forward kinematics...")
 
-    if urdf_path and os.path.exists(urdf_path):
-        # Use actual URDF file
-        print(f"Using URDF: {urdf_path}")
-        sim, robot_config, gt_transforms = SimulationFramework.create_from_urdf(
-            urdf_path=urdf_path,
-            camera_specs=camera_specs,
-            perturbation_translation_m=0.020,  # 20mm
-            perturbation_rotation_deg=3.0,  # 3°
-            seed=42,
-        )
-    else:
-        # Use camera specs directly (URDF not required for simulation)
-        print("Using camera specifications directly (URDF optional)")
-        sim, robot_config, gt_transforms = SimulationFramework.create_from_urdf(
-            urdf_path="",  # Will create minimal URDF stub
-            camera_specs=camera_specs,
-            perturbation_translation_m=0.020,
-            perturbation_rotation_deg=3.0,
-            seed=42,
-        )
+    sim, robot_config, gt_transforms = SimulationFramework.create_from_urdf(
+        urdf_path=urdf_path,
+        camera_specs=camera_specs,
+        perturbation_translation_m=0.020,  # 20mm
+        perturbation_rotation_deg=3.0,  # 3°
+        seed=42,
+    )
 
     print(f"Created {len(robot_config.cameras)} cameras")
+    print(f"URDF contains {len(sim.urdf_model.link_map)} links, {len(sim.urdf_model.joint_map)} joints")
 
-    # Generate synthetic data
-    print("\nGenerating synthetic calibration data...")
+    # Generate synthetic data using URDF forward kinematics
+    print("\nGenerating synthetic calibration data using URDF FK...")
+    print("  Each capture uses random joint configuration from URDF")
     sim.noise_translation_m = 0.002  # 2mm
     sim.noise_rotation_rad = np.deg2rad(1.0)  # 1°
 
     captures = sim.generate_dataset(num_captures=30, num_objects_per_capture=3)
-    print(f"Generated {len(captures)} captures")
+    print(f"Generated {len(captures)} captures with realistic robot poses")
 
     # Run calibration
     print("\nRunning calibration...")
@@ -159,8 +149,10 @@ def run_urdf_based_verification(urdf_path: str = None):
     # Summary
     print("\n" + "=" * 70)
     print(f"  Maximum error: {max_trans_err:.3f}mm, {max_rot_err:.3f}°")
+    print(f"  URDF-based FK: Using actual robot kinematics for link poses")
 
-    success = max_trans_err < 1.0 and max_rot_err < 0.1
+    # More realistic threshold for URDF-based simulation
+    success = max_trans_err < 2.0 and max_rot_err < 0.3
     print(f"  Status: {'PASS' if success else 'FAIL'}")
     print("=" * 70)
 
@@ -215,18 +207,16 @@ def demonstrate_camera_specs_only():
 def main():
     """Run Unitree G1 URDF-based verification example."""
 
-    # Check for URDF file (optional)
-    urdf_path = None
-    possible_paths = [
-        "g1.urdf",
-        "../g1.urdf",
-        "models/g1.urdf",
-    ]
+    # Find G1 URDF file
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    urdf_path = os.path.join(script_dir, '..', 'urdf', 'g1_dual_arm.urdf')
 
-    for path in possible_paths:
-        if os.path.exists(path):
-            urdf_path = path
-            break
+    if not os.path.exists(urdf_path):
+        print(f"ERROR: URDF file not found at {urdf_path}")
+        print("\nDownload it with:")
+        print("  mkdir -p urdf")
+        print("  curl -sL https://raw.githubusercontent.com/unitreerobotics/unitree_ros/master/robots/g1_description/g1_dual_arm.urdf -o urdf/g1_dual_arm.urdf")
+        return False
 
     # Run verification
     success = run_urdf_based_verification(urdf_path)

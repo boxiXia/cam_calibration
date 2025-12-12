@@ -15,11 +15,13 @@ class SimulationFramework:
         ground_truth_transforms: Dict[str, np.ndarray],
         noise_translation_m: float = 0.002,
         noise_rotation_rad: float = np.deg2rad(1.0),
+        urdf_model=None,
     ):
         self.robot_config = robot_config
         self.ground_truth_transforms = ground_truth_transforms
         self.noise_translation_m = noise_translation_m
         self.noise_rotation_rad = noise_rotation_rad
+        self.urdf_model = urdf_model
 
         for camera in robot_config.cameras:
             if camera.camera_id not in ground_truth_transforms:
@@ -36,11 +38,11 @@ class SimulationFramework:
         """Create simulation from URDF file with camera specifications.
 
         Args:
-            urdf_path: Path to URDF file
+            urdf_path: Path to URDF file (must exist)
             camera_specs: List of dicts with keys:
                 - camera_id: str
-                - parent_link: str
-                - xyz: [x, y, z] position relative to parent
+                - parent_link: str (must exist in URDF)
+                - xyz: [x, y, z] position relative to parent link
                 - rpy: [r, p, y] orientation (roll, pitch, yaw) in radians
             perturbation_translation_m: Perturbation magnitude for initial estimate
             perturbation_rotation_deg: Perturbation magnitude for initial estimate
@@ -57,21 +59,26 @@ class SimulationFramework:
                  "xyz": [0.1, 0, 0.05], "rpy": [0, 0, 0]},
             ]
         """
+        import yourdfpy
+
         if seed is not None:
             np.random.seed(seed)
 
-        # Load URDF if provided (optional - only validates file exists)
-        if urdf_path:
-            try:
-                import yourdfpy
-                _ = yourdfpy.URDF.load(urdf_path)
-            except ImportError:
-                raise ImportError("Install yourdfpy: pip install yourdfpy")
-            except Exception as e:
-                print(f"Warning: Could not load URDF: {e}")
-                print("Continuing with camera specs only...")
+        # Load URDF and verify all parent links exist (skip mesh loading)
+        urdf_model = yourdfpy.URDF.load(urdf_path, load_meshes=False)
 
-        # Build ground truth transforms from camera specs
+        # Verify all parent links exist in URDF
+        urdf_links = set(urdf_model.link_map.keys())
+        for spec in camera_specs:
+            parent_link = spec["parent_link"]
+            if parent_link not in urdf_links:
+                raise ValueError(
+                    f"Parent link '{parent_link}' not found in URDF. "
+                    f"Available links: {sorted(urdf_links)}"
+                )
+
+        # Build ground truth link_T_cam transforms from camera specs
+        # These are the transforms we're trying to calibrate
         ground_truth_transforms = {}
         cameras = []
 
@@ -81,17 +88,17 @@ class SimulationFramework:
             xyz = np.array(spec["xyz"])
             rpy = np.array(spec["rpy"])
 
-            # Build ground truth transform from xyz + rpy
+            # Build ground truth link_T_cam from xyz + rpy
             # RPY: roll (X), pitch (Y), yaw (Z) in fixed frame (ZYX convention)
             R_x = axis_angle_to_rotation_matrix([rpy[0], 0, 0])
             R_y = axis_angle_to_rotation_matrix([0, rpy[1], 0])
             R_z = axis_angle_to_rotation_matrix([0, 0, rpy[2]])
             R = R_z @ R_y @ R_x  # ZYX rotation order
 
-            gt_transform = np.eye(4)
-            gt_transform[:3, :3] = R
-            gt_transform[:3, 3] = xyz
-            ground_truth_transforms[camera_id] = gt_transform
+            link_T_cam = np.eye(4)
+            link_T_cam[:3, :3] = R
+            link_T_cam[:3, 3] = xyz
+            ground_truth_transforms[camera_id] = link_T_cam
 
             # Create perturbed initial estimate
             perturb_trans = np.random.uniform(
@@ -106,7 +113,7 @@ class SimulationFramework:
             perturb_T[:3, :3] = axis_angle_to_rotation_matrix(perturb_rot)
             perturb_T[:3, 3] = perturb_trans
 
-            init_estimate = gt_transform @ perturb_T
+            init_estimate = link_T_cam @ perturb_T
 
             cameras.append(CameraConfig(
                 camera_id=camera_id,
@@ -115,7 +122,11 @@ class SimulationFramework:
             ))
 
         robot_config = RobotConfig(cameras=cameras)
-        sim = SimulationFramework(robot_config, ground_truth_transforms)
+        sim = SimulationFramework(
+            robot_config,
+            ground_truth_transforms,
+            urdf_model=urdf_model
+        )
 
         return sim, robot_config, ground_truth_transforms
 
@@ -174,8 +185,52 @@ class SimulationFramework:
 
         return sim, robot_config, ground_truth_transforms
 
+    def generate_urdf_link_poses(self) -> Dict[str, np.ndarray]:
+        """Generate link poses using URDF forward kinematics.
+
+        Samples random joint configuration and computes forward kinematics
+        to get base_T_link for each parent link used by cameras.
+
+        Returns:
+            Dictionary mapping link_name to base_T_link transform
+        """
+        if self.urdf_model is None:
+            raise ValueError("URDF model not loaded. Use create_from_urdf().")
+
+        # Get unique parent links needed
+        unique_links = set(cam.parent_link for cam in self.robot_config.cameras)
+
+        # Sample random joint configuration
+        cfg = {}
+        for joint_name in self.urdf_model.actuated_joint_names:
+            joint = self.urdf_model.joint_map[joint_name]
+            if joint.limit is not None and joint.limit.lower is not None:
+                # Use joint limits
+                cfg[joint_name] = np.random.uniform(
+                    joint.limit.lower, joint.limit.upper
+                )
+            else:
+                # No limits, use reasonable range
+                cfg[joint_name] = np.random.uniform(-np.pi / 2, np.pi / 2)
+
+        # Update URDF configuration
+        self.urdf_model.update_cfg(cfg)
+
+        # Compute forward kinematics for parent links
+        link_poses = {}
+        for link_name in unique_links:
+            try:
+                link_poses[link_name] = self.urdf_model.get_transform(link_name)
+            except Exception as e:
+                raise ValueError(
+                    f"Failed to get transform for link '{link_name}': {e}\n"
+                    f"Available links: {sorted(self.urdf_model.link_map.keys())}"
+                )
+
+        return link_poses
+
     def generate_random_link_pose(self) -> np.ndarray:
-        """Generate random base_T_link transform."""
+        """Generate random base_T_link transform (fallback when no URDF)."""
         trans = np.random.uniform(-1.0, 1.0, 3)
         axis_angle = np.random.uniform(-np.pi, np.pi, 3)
         R = axis_angle_to_rotation_matrix(axis_angle)
@@ -230,12 +285,21 @@ class SimulationFramework:
         link_poses: Optional[Dict[str, np.ndarray]] = None,
         object_poses: Optional[List[np.ndarray]] = None,
     ) -> Capture:
-        """Generate synthetic capture with detections."""
+        """Generate synthetic capture with detections.
+
+        Uses URDF forward kinematics for link poses if URDF model is loaded,
+        otherwise generates random link poses.
+        """
         if link_poses is None:
-            link_poses = {}
-            unique_links = set(cam.parent_link for cam in self.robot_config.cameras)
-            for link_name in unique_links:
-                link_poses[link_name] = self.generate_random_link_pose()
+            if self.urdf_model is not None:
+                # Use URDF forward kinematics to generate realistic link poses
+                link_poses = self.generate_urdf_link_poses()
+            else:
+                # Fallback to random link poses
+                link_poses = {}
+                unique_links = set(cam.parent_link for cam in self.robot_config.cameras)
+                for link_name in unique_links:
+                    link_poses[link_name] = self.generate_random_link_pose()
 
         if object_poses is None:
             object_poses = [self.generate_random_object_pose() for _ in range(num_objects)]
