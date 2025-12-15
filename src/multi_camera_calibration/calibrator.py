@@ -3,6 +3,7 @@
 import numpy as np
 from scipy.optimize import least_squares
 from typing import Dict, List, Optional
+from collections import deque
 import warnings
 
 from .data_structures import RobotConfig, Capture, Detection, ValidationResult
@@ -34,6 +35,10 @@ class Calibrator:
         self._constraints: Optional[List[PairwiseConstraint]] = None
         self._optimized_corrections: Optional[np.ndarray] = None
 
+    def _get_correction_slice(self, camera_idx: int) -> slice:
+        """Get array slice for camera's 6-DOF correction."""
+        return slice(camera_idx * 6, (camera_idx + 1) * 6)
+
     def add_capture(self, link_poses: Dict[str, np.ndarray], detections: List[Detection], capture_id: Optional[int] = None) -> None:
         """Add synchronized capture: link poses (from SDK) + detections (from AprilTag pipeline)."""
         self.captures.append(Capture(
@@ -45,23 +50,21 @@ class Calibrator:
         self._optimized_corrections = None
 
     def _check_constraint_graph_connected(self, constraints: List[PairwiseConstraint]) -> bool:
-        """BFS to verify all cameras are transitively connected via shared observations."""
+        """BFS to verify all cameras connected via shared observations."""
         if not constraints:
             return False
 
         # Build adjacency graph
         camera_ids = [cam.camera_id for cam in self.robot_config.cameras]
-        graph = {cam_id: set() for cam_id in camera_ids}
+        graph = {cid: set() for cid in camera_ids}
         for c in constraints:
             graph[c.camera_a_id].add(c.camera_b_id)
             graph[c.camera_b_id].add(c.camera_a_id)
 
-        # BFS from first camera
-        visited = {camera_ids[0]}
-        queue = [camera_ids[0]]
+        # BFS from first camera using deque
+        visited, queue = {camera_ids[0]}, deque([camera_ids[0]])
         while queue:
-            current = queue.pop(0)
-            for neighbor in graph[current]:
+            for neighbor in graph[queue.popleft()]:
                 if neighbor not in visited:
                     visited.add(neighbor)
                     queue.append(neighbor)
@@ -147,21 +150,17 @@ class Calibrator:
         if self._optimized_corrections is None:
             raise RuntimeError("Call optimize() first")
 
-        transforms = {}
-        for i, camera in enumerate(self.robot_config.cameras):
-            correction = self._optimized_corrections[i * 6 : (i + 1) * 6]
-            transforms[camera.camera_id] = apply_correction(camera.init_link_T_cam, correction)
-        return transforms
+        return {cam.camera_id: apply_correction(cam.init_link_T_cam,
+                                                 self._optimized_corrections[self._get_correction_slice(i)])
+                for i, cam in enumerate(self.robot_config.cameras)}
 
     def get_corrections(self) -> Dict[str, np.ndarray]:
         """Get 6-DOF corrections [rx,ry,rz,tx,ty,tz] for each camera."""
         if self._optimized_corrections is None:
             raise RuntimeError("Call optimize() first")
 
-        corrections = {}
-        for i, camera in enumerate(self.robot_config.cameras):
-            corrections[camera.camera_id] = self._optimized_corrections[i * 6 : (i + 1) * 6]
-        return corrections
+        return {cam.camera_id: self._optimized_corrections[self._get_correction_slice(i)]
+                for i, cam in enumerate(self.robot_config.cameras)}
 
     def validate(
         self,
@@ -197,11 +196,10 @@ class Calibrator:
 
         # Correction magnitudes
         correction_magnitudes = {}
-        for i, camera in enumerate(self.robot_config.cameras):
-            corr = self._optimized_corrections[i * 6 : (i + 1) * 6]
-            trans_mm = np.linalg.norm(corr[3:]) * 1000
-            rot_deg = np.rad2deg(np.linalg.norm(corr[:3]))
-            correction_magnitudes[camera.camera_id] = (trans_mm, rot_deg)
+        for i, cam in enumerate(self.robot_config.cameras):
+            corr = self._optimized_corrections[self._get_correction_slice(i)]
+            correction_magnitudes[cam.camera_id] = (np.linalg.norm(corr[3:]) * 1000,
+                                                     np.rad2deg(np.linalg.norm(corr[:3])))
 
         # Sanity check: all corrections within bounds?
         passed_sanity = all(

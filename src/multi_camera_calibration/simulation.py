@@ -83,43 +83,22 @@ class SimulationFramework:
         cameras = []
 
         for spec in camera_specs:
-            camera_id = spec["camera_id"]
-            parent_link = spec["parent_link"]
-            xyz = np.array(spec["xyz"])
-            rpy = np.array(spec["rpy"])
+            camera_id, parent_link = spec["camera_id"], spec["parent_link"]
+            xyz, rpy = np.array(spec["xyz"]), np.array(spec["rpy"])
 
-            # Build ground truth link_T_cam from xyz + rpy
-            # RPY: roll (X), pitch (Y), yaw (Z) in fixed frame (ZYX convention)
-            R_x = axis_angle_to_rotation_matrix([rpy[0], 0, 0])
-            R_y = axis_angle_to_rotation_matrix([0, rpy[1], 0])
-            R_z = axis_angle_to_rotation_matrix([0, 0, rpy[2]])
-            R = R_z @ R_y @ R_x  # ZYX rotation order
-
+            # Build ground truth link_T_cam from xyz + rpy (ZYX convention)
             link_T_cam = np.eye(4)
-            link_T_cam[:3, :3] = R
+            link_T_cam[:3, :3] = SimulationFramework._rpy_to_matrix(rpy)
             link_T_cam[:3, 3] = xyz
             ground_truth_transforms[camera_id] = link_T_cam
 
-            # Create perturbed initial estimate
-            perturb_trans = np.random.uniform(
-                -perturbation_translation_m, perturbation_translation_m, 3
+            # Perturb for initial estimate
+            init_estimate = SimulationFramework._perturb_transform(
+                link_T_cam, perturbation_translation_m, perturbation_rotation_deg
             )
-            perturb_rot = np.random.uniform(
-                -np.deg2rad(perturbation_rotation_deg),
-                np.deg2rad(perturbation_rotation_deg),
-                3,
-            )
-            perturb_T = np.eye(4)
-            perturb_T[:3, :3] = axis_angle_to_rotation_matrix(perturb_rot)
-            perturb_T[:3, 3] = perturb_trans
 
-            init_estimate = link_T_cam @ perturb_T
-
-            cameras.append(CameraConfig(
-                camera_id=camera_id,
-                parent_link=parent_link,
-                init_link_T_cam=init_estimate,
-            ))
+            cameras.append(CameraConfig(camera_id=camera_id, parent_link=parent_link,
+                                       init_link_T_cam=init_estimate))
 
         robot_config = RobotConfig(cameras=cameras)
         sim = SimulationFramework(
@@ -145,40 +124,28 @@ class SimulationFramework:
         if seed is not None:
             np.random.seed(seed)
 
-        ground_truth_transforms = {}
-        for camera_id in camera_ids:
-            trans = np.random.uniform(-0.2, 0.2, 3)
-            axis_angle = np.random.uniform(-np.pi / 4, np.pi / 4, 3)
-            R = axis_angle_to_rotation_matrix(axis_angle)
-
-            T = np.eye(4)
-            T[:3, :3] = R
-            T[:3, 3] = trans
-            ground_truth_transforms[camera_id] = T
-
-        cameras = []
-        for camera_id, parent_link in zip(camera_ids, parent_links):
-            gt_transform = ground_truth_transforms[camera_id]
-
-            perturb_trans = np.random.uniform(
-                -perturbation_translation_m, perturbation_translation_m, 3
+        # Generate random ground truth transforms
+        ground_truth_transforms = {
+            cid: SimulationFramework._make_transform(
+                np.random.uniform(-0.2, 0.2, 3),
+                np.random.uniform(-np.pi / 4, np.pi / 4, 3)
             )
-            perturb_rot = np.random.uniform(
-                -np.deg2rad(perturbation_rotation_deg),
-                np.deg2rad(perturbation_rotation_deg),
-                3,
+            for cid in camera_ids
+        }
+
+        # Perturb to create initial estimates
+        cameras = [
+            CameraConfig(
+                camera_id=cid,
+                parent_link=plink,
+                init_link_T_cam=SimulationFramework._perturb_transform(
+                    ground_truth_transforms[cid],
+                    perturbation_translation_m,
+                    perturbation_rotation_deg
+                )
             )
-            perturb_T = np.eye(4)
-            perturb_T[:3, :3] = axis_angle_to_rotation_matrix(perturb_rot)
-            perturb_T[:3, 3] = perturb_trans
-
-            init_estimate = gt_transform @ perturb_T
-
-            cameras.append(CameraConfig(
-                camera_id=camera_id,
-                parent_link=parent_link,
-                init_link_T_cam=init_estimate,
-            ))
+            for cid, plink in zip(camera_ids, parent_links)
+        ]
 
         robot_config = RobotConfig(cameras=cameras)
         sim = SimulationFramework(robot_config, ground_truth_transforms)
@@ -229,23 +196,42 @@ class SimulationFramework:
 
         return link_poses
 
-    def _make_transform(self, translation: np.ndarray, axis_angle: np.ndarray) -> np.ndarray:
+    @staticmethod
+    def _make_transform(translation: np.ndarray, axis_angle: np.ndarray) -> np.ndarray:
         """Helper: Build 4x4 SE3 transform from translation + axis-angle rotation."""
         T = np.eye(4)
         T[:3, :3] = axis_angle_to_rotation_matrix(axis_angle)
         T[:3, 3] = translation
         return T
 
+    @staticmethod
+    def _rpy_to_matrix(rpy: np.ndarray) -> np.ndarray:
+        """Convert roll-pitch-yaw to rotation matrix (ZYX convention)."""
+        Rx = axis_angle_to_rotation_matrix([rpy[0], 0, 0])
+        Ry = axis_angle_to_rotation_matrix([0, rpy[1], 0])
+        Rz = axis_angle_to_rotation_matrix([0, 0, rpy[2]])
+        return Rz @ Ry @ Rx
+
+    @staticmethod
+    def _perturb_transform(T: np.ndarray, trans_m: float, rot_deg: float) -> np.ndarray:
+        """Add random perturbation to transform."""
+        perturb_T = np.eye(4)
+        perturb_T[:3, :3] = axis_angle_to_rotation_matrix(
+            np.random.uniform(-np.deg2rad(rot_deg), np.deg2rad(rot_deg), 3)
+        )
+        perturb_T[:3, 3] = np.random.uniform(-trans_m, trans_m, 3)
+        return T @ perturb_T
+
     def generate_random_link_pose(self) -> np.ndarray:
         """Generate random base_T_link transform (fallback when no URDF)."""
-        return self._make_transform(
+        return SimulationFramework._make_transform(
             np.random.uniform(-1.0, 1.0, 3),
             np.random.uniform(-np.pi, np.pi, 3)
         )
 
     def generate_random_object_pose(self) -> np.ndarray:
         """Generate random object pose in front of robot for AprilTag-like target."""
-        return self._make_transform(
+        return SimulationFramework._make_transform(
             np.random.uniform([0.3, -0.5, 0.0], [1.5, 0.5, 1.0]),  # In front, left/right, above ground
             np.random.uniform(-np.pi / 4, np.pi / 4, 3)  # Small random tilt
         )

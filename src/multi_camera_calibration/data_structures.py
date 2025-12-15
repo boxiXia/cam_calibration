@@ -42,10 +42,10 @@ class RobotConfig:
 
     def get_camera_by_id(self, camera_id: str) -> CameraConfig:
         """Get camera configuration by ID."""
-        for cam in self.cameras:
-            if cam.camera_id == camera_id:
-                return cam
-        raise ValueError(f"Camera {camera_id} not found in robot config")
+        cam = next((c for c in self.cameras if c.camera_id == camera_id), None)
+        if not cam:
+            raise ValueError(f"Camera {camera_id} not found")
+        return cam
 
 
 @dataclass
