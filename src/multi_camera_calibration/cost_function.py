@@ -25,22 +25,26 @@ def generate_pairwise_constraints(
     robot_config: RobotConfig,
     min_tags: int = 2,
 ) -> List[PairwiseConstraint]:
-    """Generate pairwise constraints: for each object seen by 2+ cameras, enforce pose agreement."""
+    """Generate pairwise constraints: for each object seen by 2+ cameras, enforce pose agreement.
+
+    Key idea: If camera A and B both see object O, they must predict the same base_T_object.
+    This creates a constraint linking their calibrations.
+    """
     constraints = []
 
     for capture in captures:
-        # Group valid detections (≥ min_tags) by object
+        # Group detections by object (filter low-quality detections with <min_tags)
         objects_to_detections = {}
         for det in capture.detections:
             if det.num_tags >= min_tags:
                 objects_to_detections.setdefault(det.object_id, []).append(det)
 
-        # Create pairwise constraints for multi-view objects
+        # For each object seen by ≥2 cameras, create pairwise constraints
         for detections in objects_to_detections.values():
             if len(detections) < 2:
-                continue
+                continue  # Object only seen by one camera, skip
 
-            # All pairs of detections
+            # Generate all pairs (i,j) with i<j to avoid duplicates
             for i in range(len(detections)):
                 for j in range(i + 1, len(detections)):
                     det_a, det_b = detections[i], detections[j]
@@ -55,7 +59,7 @@ def generate_pairwise_constraints(
                         base_T_link_b=capture.link_poses[cam_b.parent_link],
                         cam_a_T_object=det_a.cam_T_object,
                         cam_b_T_object=det_b.cam_T_object,
-                        weight=det_a.weight * det_b.weight,  # Combined weight
+                        weight=det_a.weight * det_b.weight,  # Higher weight if more tags detected
                     ))
 
     return constraints
@@ -67,21 +71,24 @@ def compute_pairwise_residual(
     link_T_cam_b: np.ndarray,
     w_rot: float,
 ) -> np.ndarray:
-    """Compute 6-DOF residual: both cameras should predict same base_T_object."""
-    # Chain: base→link_a→cam_a→object and base→link_b→cam_b→object
+    """Compute 6-DOF residual: both cameras should predict same base_T_object.
+
+    Returns [tx, ty, tz, rx, ry, rz] weighted residuals (6D vector).
+    """
+    # Predict object pose in base frame from each camera via transform chain
     base_T_object_a = compose_transforms(constraint.base_T_link_a, link_T_cam_a, constraint.cam_a_T_object)
     base_T_object_b = compose_transforms(constraint.base_T_link_b, link_T_cam_b, constraint.cam_b_T_object)
 
-    # Translation error (3D): difference in predicted object position
+    # Translation error: difference in predicted object position (meters)
     trans_error = base_T_object_a[:3, 3] - base_T_object_b[:3, 3]
 
-    # Rotation error (3D): axis-angle of relative rotation
+    # Rotation error: axis-angle of R_diff = R_a^T * R_b (radians)
     rot_error = rotation_matrix_to_axis_angle(base_T_object_a[:3, :3].T @ base_T_object_b[:3, :3])
 
-    # Weight by detection quality: sqrt(weight) since residuals are squared in cost
+    # Apply weights: sqrt since LM squares residuals for cost
     return np.concatenate([
         np.sqrt(constraint.weight) * trans_error,
-        np.sqrt(constraint.weight * w_rot) * rot_error,  # w_rot balances trans vs rot units
+        np.sqrt(constraint.weight * w_rot) * rot_error,  # w_rot=d² balances units (m vs rad)
     ])
 
 
@@ -92,11 +99,15 @@ def compute_residuals(
     w_rot: float,
     lambda_reg: float,
 ) -> np.ndarray:
-    """Compute residuals: pairwise errors + regularization penalties."""
-    # Build camera transforms from corrections
+    """Compute full residual vector for Levenberg-Marquardt.
+
+    Residuals = [pairwise_errors (6*N_constraints), regularization (6*N_cameras)]
+    LM minimizes sum(residuals²) to find optimal corrections.
+    """
+    # Apply corrections to initial estimates: link_T_cam = init * exp(correction)
     cameras_T = {}
     for i, camera in enumerate(robot_config.cameras):
-        correction = corrections[i * 6 : (i + 1) * 6]
+        correction = corrections[i * 6 : (i + 1) * 6]  # [rx, ry, rz, tx, ty, tz]
         cameras_T[camera.camera_id] = {
             'T': apply_correction(camera.init_link_T_cam, correction),
             'corr': correction,
@@ -104,20 +115,19 @@ def compute_residuals(
 
     residuals = []
 
-    # Pairwise constraint residuals (6 per constraint)
+    # Part 1: Pairwise constraint errors (6 residuals per constraint)
     for c in constraints:
         residuals.append(compute_pairwise_residual(
             c, cameras_T[c.camera_a_id]['T'], cameras_T[c.camera_b_id]['T'], w_rot
         ))
 
-    # Regularization residuals (6 per camera): penalize large corrections
+    # Part 2: Regularization terms (6 residuals per camera) to penalize large corrections
     reg_sqrt = np.sqrt(lambda_reg)
     for camera in robot_config.cameras:
         corr = cameras_T[camera.camera_id]['corr']
-        # Weight rotation and translation separately
         residuals.append(np.concatenate([
-            reg_sqrt * np.sqrt(w_rot) * corr[:3],  # Rotation
-            reg_sqrt * corr[3:],  # Translation
+            reg_sqrt * np.sqrt(w_rot) * corr[:3],  # Rotation penalty
+            reg_sqrt * corr[3:],  # Translation penalty
         ]))
 
     return np.concatenate(residuals)
