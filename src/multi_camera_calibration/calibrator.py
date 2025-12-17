@@ -98,6 +98,8 @@ class Calibrator:
         def residual_fn(corrections, reg_weight):
             return compute_residuals(corrections, self._constraints, self.robot_config, self.w_rot, reg_weight)
 
+        # Run optimization: result contains .x (optimized params), .success (bool),
+        # .message (status), .cost (0.5*sum(residuals²)), .fun (residuals), .jac (Jacobian)
         result = least_squares(
             lambda x: residual_fn(x, self.lambda_reg),
             np.zeros(6 * len(self.robot_config.cameras)),  # Initial: no corrections
@@ -108,7 +110,7 @@ class Calibrator:
         if not result.success:
             warnings.warn(f"Optimization failed: {result.message}")
 
-        self._optimized_corrections = result.x
+        self._optimized_corrections = result.x  # Extract optimized 6-DOF corrections
 
         if verbose:
             print(f"Done: {result.message}, cost={result.cost:.6f}")
@@ -126,7 +128,7 @@ class Calibrator:
             )
 
             if result_ft.success:
-                self._optimized_corrections = result_ft.x
+                self._optimized_corrections = result_ft.x  # Update with fine-tuned corrections
                 if verbose:
                     print(f"Fine-tuned: {result_ft.message}, cost={result_ft.cost:.6f}")
             else:
