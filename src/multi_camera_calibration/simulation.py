@@ -86,9 +86,12 @@ class SimulationFramework:
             camera_id, parent_link = spec["camera_id"], spec["parent_link"]
             xyz, rpy = np.array(spec["xyz"]), np.array(spec["rpy"])
 
-            # Build ground truth link_T_cam from xyz + rpy (ZYX convention)
+            # Build ground truth link_T_cam from xyz + rpy (ZYX convention: R = Rz*Ry*Rx)
             link_T_cam = np.eye(4)
-            link_T_cam[:3, :3] = SimulationFramework._rpy_to_matrix(rpy)
+            Rx = axis_angle_to_rotation_matrix([rpy[0], 0, 0])
+            Ry = axis_angle_to_rotation_matrix([0, rpy[1], 0])
+            Rz = axis_angle_to_rotation_matrix([0, 0, rpy[2]])
+            link_T_cam[:3, :3] = Rz @ Ry @ Rx
             link_T_cam[:3, 3] = xyz
             ground_truth_transforms[camera_id] = link_T_cam
 
@@ -205,14 +208,6 @@ class SimulationFramework:
         return T
 
     @staticmethod
-    def _rpy_to_matrix(rpy: np.ndarray) -> np.ndarray:
-        """Convert roll-pitch-yaw to rotation matrix (ZYX convention)."""
-        Rx = axis_angle_to_rotation_matrix([rpy[0], 0, 0])
-        Ry = axis_angle_to_rotation_matrix([0, rpy[1], 0])
-        Rz = axis_angle_to_rotation_matrix([0, 0, rpy[2]])
-        return Rz @ Ry @ Rx
-
-    @staticmethod
     def _perturb_transform(T: np.ndarray, trans_m: float, rot_deg: float) -> np.ndarray:
         """Add random perturbation to transform."""
         perturb_T = np.eye(4)
@@ -221,45 +216,6 @@ class SimulationFramework:
         )
         perturb_T[:3, 3] = np.random.uniform(-trans_m, trans_m, 3)
         return T @ perturb_T
-
-    def generate_random_link_pose(self) -> np.ndarray:
-        """Generate random base_T_link transform (fallback when no URDF)."""
-        return SimulationFramework._make_transform(
-            np.random.uniform(-1.0, 1.0, 3),
-            np.random.uniform(-np.pi, np.pi, 3)
-        )
-
-    def generate_random_object_pose(self) -> np.ndarray:
-        """Generate random object pose in front of robot for AprilTag-like target."""
-        return SimulationFramework._make_transform(
-            np.random.uniform([0.3, -0.5, 0.0], [1.5, 0.5, 1.0]),  # In front, left/right, above ground
-            np.random.uniform(-np.pi / 4, np.pi / 4, 3)  # Small random tilt
-        )
-
-    def add_noise_to_transform(self, T: np.ndarray) -> np.ndarray:
-        """Add Gaussian noise to transform (simulates detection errors)."""
-        T_noisy = T.copy()
-        T_noisy[:3, 3] += np.random.normal(0, self.noise_translation_m, 3)
-        T_noisy[:3, :3] @= axis_angle_to_rotation_matrix(
-            np.random.normal(0, self.noise_rotation_rad, 3)
-        )
-        return T_noisy
-
-    def can_camera_see_object(
-        self,
-        base_T_link: np.ndarray,
-        link_T_cam: np.ndarray,
-        base_T_object: np.ndarray,
-        max_distance: float = 3.0,
-        min_distance: float = 0.1,
-    ) -> bool:
-        """Check if camera can see object (distance-based)."""
-        base_T_cam = compose_transforms(base_T_link, link_T_cam)
-        cam_T_base = invert_transform(base_T_cam)
-        cam_T_object = compose_transforms(cam_T_base, base_T_object)
-
-        distance = np.linalg.norm(cam_T_object[:3, 3])
-        return min_distance <= distance <= max_distance
 
     def generate_capture(
         self,
@@ -274,13 +230,27 @@ class SimulationFramework:
         """
         # Generate link poses: URDF FK if available, else random
         if link_poses is None:
-            link_poses = (self.generate_urdf_link_poses() if self.urdf_model is not None
-                         else {link: self.generate_random_link_pose()
-                               for link in set(c.parent_link for c in self.robot_config.cameras)})
+            if self.urdf_model is not None:
+                link_poses = self.generate_urdf_link_poses()
+            else:
+                # Random link poses (fallback when no URDF)
+                link_poses = {
+                    link: SimulationFramework._make_transform(
+                        np.random.uniform(-1.0, 1.0, 3),
+                        np.random.uniform(-np.pi, np.pi, 3)
+                    )
+                    for link in set(c.parent_link for c in self.robot_config.cameras)
+                }
 
-        # Generate random object poses if not provided
+        # Generate random object poses if not provided (in front of robot for AprilTag-like target)
         if object_poses is None:
-            object_poses = [self.generate_random_object_pose() for _ in range(num_objects)]
+            object_poses = [
+                SimulationFramework._make_transform(
+                    np.random.uniform([0.3, -0.5, 0.0], [1.5, 0.5, 1.0]),  # In front, left/right, above ground
+                    np.random.uniform(-np.pi / 4, np.pi / 4, 3)  # Small random tilt
+                )
+                for _ in range(num_objects)
+            ]
 
         detections = []
         for camera in self.robot_config.cameras:
@@ -288,18 +258,19 @@ class SimulationFramework:
             link_T_cam_gt = self.ground_truth_transforms[camera.camera_id]
 
             for object_id, base_T_object in enumerate(object_poses):
-                # Check visibility constraint (distance-based)
-                if not self.can_camera_see_object(base_T_link, link_T_cam_gt, base_T_object):
+                # Check visibility: distance-based constraint
+                base_T_cam = compose_transforms(base_T_link, link_T_cam_gt)
+                cam_T_object = compose_transforms(invert_transform(base_T_cam), base_T_object)
+                distance = np.linalg.norm(cam_T_object[:3, 3])
+                if not (0.1 <= distance <= 3.0):  # min/max viewing distance
                     continue
 
-                # Compute cam_T_object: base→cam→object chain
-                cam_T_object_gt = compose_transforms(
-                    invert_transform(compose_transforms(base_T_link, link_T_cam_gt)),
-                    base_T_object
-                )
-
                 # Add detection noise (simulates AprilTag pose estimation error)
-                cam_T_object_noisy = self.add_noise_to_transform(cam_T_object_gt)
+                cam_T_object_noisy = cam_T_object.copy()
+                cam_T_object_noisy[:3, 3] += np.random.normal(0, self.noise_translation_m, 3)
+                cam_T_object_noisy[:3, :3] @= axis_angle_to_rotation_matrix(
+                    np.random.normal(0, self.noise_rotation_rad, 3)
+                )
 
                 # Random tag count (more tags → higher weight in optimization)
                 num_tags = np.random.choice([2, 3, 4, 5, 6], p=[0.1, 0.2, 0.3, 0.2, 0.2])

@@ -98,14 +98,6 @@ class Capture:
             assert pose.shape == (4, 4), f"Pose for link {link_name} must be 4x4 matrix"
             assert np.allclose(pose[3, :], [0, 0, 0, 1]), f"Pose for link {link_name} must have bottom row [0,0,0,1]"
 
-    def get_detections_by_camera(self, camera_id: str) -> List[Detection]:
-        """Get all detections from a specific camera in this capture."""
-        return [det for det in self.detections if det.camera_id == camera_id]
-
-    def get_detections_by_object(self, object_id: int) -> List[Detection]:
-        """Get all detections of a specific object in this capture."""
-        return [det for det in self.detections if det.object_id == object_id]
-
 
 @dataclass
 class ValidationResult:
