@@ -2,7 +2,7 @@
 
 import numpy as np
 from scipy.optimize import least_squares
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Literal
 from collections import deque
 import warnings
 
@@ -30,15 +30,14 @@ class Calibrator:
         self.min_tags = min_tags  # Quality filter: require ≥2 tags per detection
         self._constraints: Optional[List[PairwiseConstraint]] = None  # Cached pairwise constraints
         self._optimized_corrections: Optional[np.ndarray] = None  # Result: 6-DOF per camera
-
-    def _get_correction_slice(self, camera_idx: int) -> slice:
-        """Get array slice for camera's 6-DOF correction."""
-        return slice(camera_idx * 6, (camera_idx + 1) * 6)
+        self._result = None  # Optimization result (for covariance estimation)
 
     def add_capture(self, link_poses: Dict[str, np.ndarray], detections: List[Detection], capture_id: Optional[int] = None) -> None:
         """Add synchronized capture: link poses (from FK/SDK) + detections (from AprilTag)."""
         self.captures.append(Capture(capture_id or len(self.captures), link_poses, detections))
-        self._constraints = self._optimized_corrections = None  # Invalidate cached results
+        self._constraints = None
+        self._optimized_corrections = None
+        self._result = None
 
     def _check_constraint_graph_connected(self, constraints: List[PairwiseConstraint]) -> bool:
         """BFS to verify all cameras connected via shared observations (ensures solvable system)."""
@@ -62,13 +61,22 @@ class Calibrator:
 
         return len(visited) == len(camera_ids)  # All cameras reachable?
 
-    def optimize(self, verbose: bool = True, fine_tune: bool = False, fine_tune_lambda: float = 0.01) -> Dict[str, np.ndarray]:
-        """Run Levenberg-Marquardt to solve for camera transforms.
+    def optimize(
+        self,
+        verbose: bool = True,
+        fine_tune: bool = False,
+        fine_tune_lambda: float = 0.01,
+        loss: Literal['linear', 'huber', 'cauchy'] = 'huber',
+        f_scale: float = 0.01,
+    ) -> Dict[str, np.ndarray]:
+        """Run optimization to solve for camera transforms.
 
         Args:
             verbose: Print progress
             fine_tune: Second pass with reduced regularization for higher precision
             fine_tune_lambda: Regularization for fine-tune (default 0.01)
+            loss: Loss function - 'huber' (default, robust), 'linear' (L2), or 'cauchy'
+            f_scale: Outlier threshold for robust loss (residuals > f_scale are down-weighted)
 
         Returns:
             Dict[camera_id → optimized link_T_cam (4x4 SE3)]
@@ -76,63 +84,38 @@ class Calibrator:
         if not self.captures:
             raise ValueError("No captures. Call add_capture() first.")
 
-        # Step 1: Generate pairwise constraints (camera pairs observing same object)
-        if verbose:
-            print("Generating pairwise constraints...")
+        # Generate pairwise constraints (camera pairs observing same object)
         self._constraints = generate_pairwise_constraints(self.captures, self.robot_config, self.min_tags)
-
         if not self._constraints:
             raise ValueError(f"No constraints generated. Need multiple cameras seeing same object with ≥{self.min_tags} tags.")
-
         if verbose:
             print(f"Generated {len(self._constraints)} constraints")
 
-        # Step 2: Verify all cameras are connected (otherwise system is under-constrained)
         if not self._check_constraint_graph_connected(self._constraints):
             warnings.warn("Constraint graph disconnected - some cameras lack shared observations.")
 
-        # Step 3: Optimize via Levenberg-Marquardt (start from zero corrections = initial estimates)
-        if verbose:
-            print("Running Levenberg-Marquardt...")
+        # Use LM for linear loss (faster), TRF for robust loss (supports huber/cauchy)
+        method = 'lm' if loss == 'linear' else 'trf'
 
-        def residual_fn(corrections, reg_weight):
-            return compute_residuals(corrections, self._constraints, self.robot_config, self.w_rot, reg_weight)
+        def solve(initial: np.ndarray, lambda_reg: float):
+            result = least_squares(
+                lambda x: compute_residuals(x, self._constraints, self.robot_config, self.w_rot, lambda_reg),
+                initial, method=method, loss=loss, f_scale=f_scale, verbose=2 if verbose else 0,
+            )
+            if not result.success:
+                warnings.warn(f"Optimization warning: {result.message}")
+            return result
 
-        # Run optimization: result contains .x (optimized params), .success (bool),
-        # .message (status), .cost (0.5*sum(residuals²)), .fun (residuals), .jac (Jacobian)
-        result = least_squares(
-            lambda x: residual_fn(x, self.lambda_reg),
-            np.zeros(6 * len(self.robot_config.cameras)),  # Initial: no corrections
-            method='lm',
-            verbose=2 if verbose else 0,
-        )
+        # Main optimization pass
+        self._result = solve(np.zeros(6 * len(self.robot_config.cameras)), self.lambda_reg)
+        self._optimized_corrections = self._result.x
 
-        if not result.success:
-            warnings.warn(f"Optimization failed: {result.message}")
-
-        self._optimized_corrections = result.x  # Extract optimized 6-DOF corrections
-
-        if verbose:
-            print(f"Done: {result.message}, cost={result.cost:.6f}")
-
-        # Step 4: Optional fine-tuning with reduced regularization (allows larger corrections if needed)
+        # Optional fine-tuning with reduced regularization
         if fine_tune:
             if verbose:
                 print(f"\nFine-tuning (lambda={fine_tune_lambda})...")
-
-            result_ft = least_squares(
-                lambda x: residual_fn(x, fine_tune_lambda),
-                self._optimized_corrections,  # Warm start from coarse solution
-                method='lm',
-                verbose=2 if verbose else 0,
-            )
-
-            if result_ft.success:
-                self._optimized_corrections = result_ft.x  # Update with fine-tuned corrections
-                if verbose:
-                    print(f"Fine-tuned: {result_ft.message}, cost={result_ft.cost:.6f}")
-            else:
-                warnings.warn(f"Fine-tuning failed: {result_ft.message}")
+            self._result = solve(self._optimized_corrections, fine_tune_lambda)
+            self._optimized_corrections = self._result.x
 
         return self.get_optimized_transforms()
 
@@ -141,8 +124,7 @@ class Calibrator:
         if self._optimized_corrections is None:
             raise RuntimeError("Call optimize() first")
 
-        return {cam.camera_id: apply_correction(cam.init_link_T_cam,
-                                                 self._optimized_corrections[self._get_correction_slice(i)])
+        return {cam.camera_id: apply_correction(cam.init_link_T_cam, self._optimized_corrections[i*6:(i+1)*6])
                 for i, cam in enumerate(self.robot_config.cameras)}
 
     def get_corrections(self) -> Dict[str, np.ndarray]:
@@ -150,8 +132,25 @@ class Calibrator:
         if self._optimized_corrections is None:
             raise RuntimeError("Call optimize() first")
 
-        return {cam.camera_id: self._optimized_corrections[self._get_correction_slice(i)]
+        return {cam.camera_id: self._optimized_corrections[i*6:(i+1)*6]
                 for i, cam in enumerate(self.robot_config.cameras)}
+
+    def get_standard_errors(self) -> Dict[str, tuple]:
+        """Estimate calibration uncertainty from Jacobian. Returns (rotation_std_deg, translation_std_mm)."""
+        if self._result is None:
+            raise RuntimeError("Call optimize() first")
+
+        # Covariance = σ² (JᵀJ)⁻¹ where σ² = sum(residuals²) / dof
+        J, r = self._result.jac, self._result.fun
+        dof = max(len(r) - len(self._result.x), 1)
+        cov = (np.sum(r**2) / dof) * np.linalg.pinv(J.T @ J)
+
+        # Extract standard errors for each camera
+        result = {}
+        for i, cam in enumerate(self.robot_config.cameras):
+            std = np.sqrt(np.diag(cov[i*6:(i+1)*6, i*6:(i+1)*6]))
+            result[cam.camera_id] = (np.rad2deg(np.linalg.norm(std[:3])), np.linalg.norm(std[3:]) * 1000)
+        return result
 
     def validate(
         self,
@@ -187,7 +186,7 @@ class Calibrator:
         # Compute correction magnitudes (sanity check: corrections shouldn't be huge)
         correction_magnitudes = {}
         for i, cam in enumerate(self.robot_config.cameras):
-            corr = self._optimized_corrections[self._get_correction_slice(i)]
+            corr = self._optimized_corrections[i*6:(i+1)*6]
             correction_magnitudes[cam.camera_id] = (
                 np.linalg.norm(corr[3:]) * 1000,  # Translation magnitude (mm)
                 np.rad2deg(np.linalg.norm(corr[:3]))  # Rotation magnitude (degrees)

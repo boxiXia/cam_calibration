@@ -197,6 +197,7 @@ calibrator = Calibrator(
   - 0.25 for d=0.5m
   - 1.0 for d=1.0m
 - **lambda_reg**: Higher values trust initial estimate more (default: 1.0)
+  - Note: Not normalized by number of constraints. More data naturally reduces regularization effect.
 - **min_tags**: Minimum tags per detection (default: 2)
 
 ### Step 3: Collect Data
@@ -238,14 +239,17 @@ for i in range(30):  # 20-40 captures recommended
 ### Step 4: Optimize
 
 ```python
-# Standard optimization
+# Standard optimization (uses Huber loss for outlier robustness)
 results = calibrator.optimize(verbose=True)
 
-# With fine-tuning
+# With fine-tuning for higher precision
+results = calibrator.optimize(fine_tune=True)
+
+# With specific loss function
 results = calibrator.optimize(
-    verbose=True,
+    loss='huber',     # 'linear', 'huber' (default), or 'cauchy'
+    f_scale=0.01,     # Outlier threshold (meters)
     fine_tune=True,
-    fine_tune_lambda=0.001
 )
 ```
 
@@ -256,8 +260,10 @@ results = calibrator.optimize(
 validation = calibrator.validate()
 print(validation)
 
-# Validate on test data
-test_validation = calibrator.validate(test_captures=test_captures)
+# Get uncertainty estimates
+std_errors = calibrator.get_standard_errors()
+for cam_id, (rot_std, trans_std) in std_errors.items():
+    print(f"{cam_id}: ± {rot_std:.2f}°, ± {trans_std:.2f}mm")
 
 # Check criteria
 assert validation.passed_sanity_check
@@ -371,7 +377,9 @@ class Calibrator:
     def optimize(
         verbose: bool = True,
         fine_tune: bool = False,
-        fine_tune_lambda: float = 0.01
+        fine_tune_lambda: float = 0.01,
+        loss: str = 'huber',  # 'linear', 'huber', 'cauchy'
+        f_scale: float = 0.01
     ) -> Dict[str, np.ndarray]
 
     def validate(
@@ -382,6 +390,7 @@ class Calibrator:
 
     def get_optimized_transforms() -> Dict[str, np.ndarray]
     def get_corrections() -> Dict[str, np.ndarray]
+    def get_standard_errors() -> Dict[str, tuple]  # (rot_deg, trans_mm)
 ```
 
 ### Transform Utilities

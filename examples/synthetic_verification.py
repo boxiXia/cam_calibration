@@ -239,6 +239,12 @@ def test_large_initial_error():
     for cam_id, (trans_err, rot_err) in final_errors.items():
         print(f"  {cam_id}: {trans_err:.2f}mm, {rot_err:.2f}°")
 
+    # Show uncertainty estimates
+    std_errors = calibrator.get_standard_errors()
+    print(f"\nUncertainty estimates:")
+    for cam_id, (rot_std, trans_std) in std_errors.items():
+        print(f"  {cam_id}: ± {rot_std:.2f}°, ± {trans_std:.2f}mm")
+
     # Compute improvement
     initial_trans = np.mean([t for t, _ in initial_errors.values()])
     final_trans = np.mean([t for t, _ in final_errors.values()])

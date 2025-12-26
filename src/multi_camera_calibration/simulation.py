@@ -3,7 +3,7 @@
 import numpy as np
 from typing import Dict, List, Tuple, Optional
 from .data_structures import CameraConfig, RobotConfig, Capture, Detection
-from .transforms import compose_transforms, invert_transform, axis_angle_to_rotation_matrix
+from .transforms import compose_transforms, invert_transform, axis_angle_to_rotation_matrix, translation_error, rotation_error
 
 
 class SimulationFramework:
@@ -288,40 +288,16 @@ class SimulationFramework:
             detections=detections,
         )
 
-    def generate_dataset(
-        self,
-        num_captures: int,
-        num_objects_per_capture: int = 3,
-    ) -> List[Capture]:
+    def generate_dataset(self, num_captures: int, num_objects_per_capture: int = 3) -> List[Capture]:
         """Generate full synthetic dataset."""
-        captures = []
-        for i in range(num_captures):
-            capture = self.generate_capture(i, num_objects_per_capture)
-            captures.append(capture)
-        return captures
+        return [self.generate_capture(i, num_objects_per_capture) for i in range(num_captures)]
 
-    def compute_ground_truth_errors(
-        self,
-        optimized_transforms: Dict[str, np.ndarray],
-    ) -> Dict[str, Tuple[float, float]]:
-        """Compute errors between optimized and ground truth transforms."""
-        errors = {}
-
-        for camera_id, optimized_T in optimized_transforms.items():
-            gt_T = self.ground_truth_transforms[camera_id]
-
-            # Translation error
-            trans_error = np.linalg.norm(optimized_T[:3, 3] - gt_T[:3, 3]) * 1000  # mm
-
-            # Rotation error
-            R_opt = optimized_T[:3, :3]
-            R_gt = gt_T[:3, :3]
-            R_diff = R_gt.T @ R_opt
-
-            trace = np.trace(R_diff)
-            angle = np.arccos(np.clip((trace - 1) / 2, -1, 1))
-            rot_error = np.rad2deg(angle)
-
-            errors[camera_id] = (trans_error, rot_error)
-
-        return errors
+    def compute_ground_truth_errors(self, optimized_transforms: Dict[str, np.ndarray]) -> Dict[str, Tuple[float, float]]:
+        """Compute errors between optimized and ground truth transforms. Returns (mm, degrees)."""
+        return {
+            camera_id: (
+                translation_error(optimized_T, self.ground_truth_transforms[camera_id]) * 1000,
+                np.rad2deg(rotation_error(optimized_T, self.ground_truth_transforms[camera_id]))
+            )
+            for camera_id, optimized_T in optimized_transforms.items()
+        }
